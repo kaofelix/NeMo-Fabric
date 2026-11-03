@@ -1341,9 +1341,22 @@ async def test_hermes_failure_signals_are_normalized(
     ) == expected_error
 
 
+@pytest.mark.parametrize(
+    ("model_max_tokens", "harness_max_tokens", "expected_max_tokens"),
+    [
+        (None, None, None),
+        (None, 1024, 1024),
+        (768, None, 768),
+        (768, 1024, 768),
+    ],
+    ids=["native-default", "harness-only", "model-only", "model-over-harness"],
+)
 async def test_persistent_runtime_reuses_hermes_agent_session_and_history(
     monkeypatch,
     tmp_path: Path,
+    model_max_tokens: int | None,
+    harness_max_tokens: int | None,
+    expected_max_tokens: int | None,
 ):
     """A persistent Hermes runtime applies model extensions and reuses state."""
     mock_session_db = MagicMock(spec=SessionDB)
@@ -1418,7 +1431,11 @@ async def test_persistent_runtime_reuses_hermes_agent_session_and_history(
     }
     payload["config"] = _agent_config(
         {
-            "harness": {"settings": {"max_tokens": 1024}},
+            "harness": {
+                "settings": {"max_tokens": harness_max_tokens}
+                if harness_max_tokens is not None
+                else {}
+            },
             "instructions": {"system": {"content": "system", "mode": "replace"}},
             "runtime": {"max_turns": None},
             "tools": {"enabled": []},
@@ -1429,7 +1446,11 @@ async def test_persistent_runtime_reuses_hermes_agent_session_and_history(
                     "api_key_env": "TEST_API_KEY",
                     "temperature": 0.2,
                     "top_p": 0.85,
-                    "max_tokens": 768,
+                    **(
+                        {"max_tokens": model_max_tokens}
+                        if model_max_tokens is not None
+                        else {}
+                    ),
                 }
             },
         }
@@ -1474,7 +1495,7 @@ async def test_persistent_runtime_reuses_hermes_agent_session_and_history(
         skip_context_files=True,
         skip_memory=True,
         save_trajectories=False,
-        max_tokens=768,
+        max_tokens=expected_max_tokens,
         request_overrides={"temperature": 0.2, "top_p": 0.85},
         reasoning_config={"effort": "none"},
         platform="fabric",
