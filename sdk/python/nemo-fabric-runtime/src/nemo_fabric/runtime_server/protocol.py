@@ -7,7 +7,7 @@ import json
 import sys
 from typing import Any
 
-from nemo_fabric import FabricConfigError, RunResult, RuntimeHandle
+from nemo_fabric import FabricConfigError, RunResult, RuntimeHandle, RuntimeStatusReport
 from nemo_fabric.runtime_server.health import validate_check_response
 
 INTERFACE_VERSION = 2
@@ -17,7 +17,7 @@ CALL_SECONDS = 320.0
 READ_SECONDS = 10.0
 SHUTDOWN_SECONDS = 4.0
 SOCKET_PATH = "/sandbox/fabric.sock"
-OPERATIONS = ("start", "invoke", "stop", "serve", "check")
+OPERATIONS = ("start", "invoke", "stop", "serve", "check", "status")
 CONFIG_OPERATIONS = ("start",)
 LIFECYCLE_OPERATIONS = ("start", "stop")
 
@@ -33,6 +33,7 @@ MESSAGES = {
     "start_failed": "Fabric could not establish an active runtime.",
     "start_uncertain": "A previous runtime start has an uncertain outcome; replace the sandbox before starting another.",
     "runtime_id_conflict": "Fabric returned a runtime ID that is already in use.",
+    "status_failed": "Fabric could not read the recorded runtime status.",
     "stop_failed": "Fabric could not complete the stop operation.",
     "invoke_failed": "Fabric did not report a successful invocation.",
     "host_stopping": "The Fabric host is shutting down.",
@@ -115,9 +116,9 @@ def validate_request(request: Any) -> str:
     ):
         raise ProtocolError("interface_unsupported", unsupported=True)
     required = {"interface_version", "operation"}
-    if operation in ("start", "invoke", "stop"):
+    if operation in ("start", "invoke", "stop", "status"):
         required.add("agent")
-    if operation in ("invoke", "stop"):
+    if operation in ("invoke", "stop", "status"):
         required.add("runtime_id")
     if operation == "start":
         required.add("config")
@@ -225,9 +226,11 @@ def encode_response(response: dict[str, Any]) -> bytes:
     return _encode(
         envelope(
             response["operation"],
-            changed=False if response["operation"] == "check" else None,
+            changed=False if response["operation"] in ("check", "status") else None,
             error=ProtocolError("response_too_large", "transport"),
-            effects="none" if response["operation"] == "check" else "unknown",
+            effects="none"
+            if response["operation"] in ("check", "status")
+            else "unknown",
         )
     )
 
@@ -259,18 +262,32 @@ def validate_response(response: dict[str, Any], operation: str) -> None:
                 "stop",
                 "invoke",
                 "check",
+                "status",
                 "transport",
             )
             or error["effects"] not in ("none", "applied", "unknown")
         ):
             raise invalid
         error["message"] = MESSAGES[error["code"]]
+        if operation == "status":
+            if (
+                response["changed"] is not False
+                or error["effects"] != "none"
+                or response["result"] is not None
+            ):
+                raise invalid
+            return
         if operation != "check":
             return
     result = response["result"]
     try:
         if operation == "check":
             validate_check_response(response)
+        elif operation == "status":
+            report = RuntimeStatusReport.from_mapping(result)
+            if response["changed"] is not False or report.server_state is None:
+                raise invalid
+            response["result"] = report.to_mapping()
         elif operation == "invoke":
             RunResult.from_mapping(result)
             if response["changed"] is not None:
