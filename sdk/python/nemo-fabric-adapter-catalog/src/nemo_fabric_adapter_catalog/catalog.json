@@ -2803,6 +2803,25 @@
               "type": "array",
               "uniqueItems": true
             },
+            "interfaces": {
+              "additionalProperties": false,
+              "description": "Native interfaces offered by the runtime.",
+              "properties": {
+                "terminal": {
+                  "additionalProperties": false,
+                  "description": "Pi's terminal UI, opened by <artifact root>/.fabric/pi/runtimes/<runtime-id>/interfaces/terminal in a separate session that shares the runtime's model, tools, skills, extensions, MCP servers and system prompt.",
+                  "properties": {
+                    "enabled": {
+                      "default": true,
+                      "description": "Write a launcher for Pi's terminal UI. A present terminal is on unless this is false.",
+                      "type": "boolean"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            },
             "relay_extension_path": {
               "description": "Absolute path or environment.workspace-relative path to the NeMo Relay Pi extension matching the CLI release",
               "minLength": 1,
@@ -2850,7 +2869,7 @@
         "name": "nemo-fabric-adapters-pi",
         "version": "0.7.0"
       },
-      "sha256": "1d3f4b6933689530782ba0ebd019ca9af3476a8f9b7d5b955783d0a59b743283",
+      "sha256": "50af77b2fa61e685fa80a1837a2528884b8364d0b3b22d1f70acb6342f69b44a",
       "source": "adapters/typescript/pi/pi.fabric-adapter.json"
     },
     "nvidia.fabric.qwen": {

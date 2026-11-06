@@ -28,6 +28,13 @@ import {
   type PiRelayControllerFactory,
   type PiRelayRuntime,
 } from "./relay.js";
+import {
+  PiTerminal,
+  PiTerminalSessionHandle,
+  resolvePiCli,
+  runtimeDirectory,
+  terminalEnabled,
+} from "./terminal.js";
 import { invocationUsage } from "./usage.js";
 import type { PiPromptOutcome, PiSessionFactory, PiSessionHandle } from "./runtime.js";
 
@@ -256,7 +263,9 @@ export function selectPiMcpServers(
   config: AgentConfig,
   configuredEnvironment: Record<string, string>,
   parentEnvironment: NodeJS.ProcessEnv,
+  options: { expandHeaders?: boolean } = {},
 ): Record<string, McpServerConfig> {
+  const expandHeaders = options.expandHeaders ?? true;
   if (config.mcp?.extensions !== undefined) {
     throw new LifecycleError("pi_mcp_extensions_unsupported", "Pi does not support Fabric MCP extensions");
   }
@@ -321,9 +330,10 @@ export function selectPiMcpServers(
             throw new LifecycleError("pi_mcp_invalid_header", "A configured Pi MCP HTTP header is invalid");
           }
           headerNames.add(normalizedName);
+          // Pi's mcp.json expands ${NAME} references itself, so a written configuration keeps them.
           const expanded = expandMcpHeader(value, configuredEnvironment, parentEnvironment);
           validateMcpHeader(headerName, expanded);
-          return [headerName, expanded];
+          return [headerName, expandHeaders ? expanded : value];
         }),
       );
       selected[name] = {
@@ -653,7 +663,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-async function resolveToolModule(workspace: string, reference: string): Promise<{ path: string; exportName: string }> {
+export async function resolveToolModule(workspace: string, reference: string): Promise<{ path: string; exportName: string }> {
   const match = /^(?<path>[^#]+?)(?:#(?<export>[A-Za-z_$][\w$]*))?$/.exec(reference);
   const configuredPath = match?.groups?.path;
   if (configuredPath === undefined || isAbsolute(configuredPath)) {
@@ -1134,6 +1144,43 @@ export class PiSdkSessionFactory implements PiSessionFactory {
         reserveTokens: compactionReserveTokens,
       },
     });
+    // The terminal UI gets the same configuration, written to files it reads at launch.
+    let terminal: PiTerminal | undefined;
+    if (terminalEnabled(input.config)) {
+      const { baseUrl: terminalBaseUrl, ...terminalModel } = catalogEntry;
+      const customToolReferences = await Promise.all(
+        Object.entries(input.config.tools?.definitions ?? {}).map(async ([name, definition]) => ({
+          name,
+          ...(await resolveToolModule(workspace, definition.ref)),
+          settings: definition.settings ?? {},
+        })),
+      );
+      terminal = await PiTerminal.prepare(
+        {
+          workspace,
+          provider: selected.provider,
+          ...(terminalBaseUrl === undefined ? {} : { baseUrl: terminalBaseUrl }),
+          model: terminalModel as Record<string, unknown>,
+          apiKeyEnv,
+          compactionReserveTokens,
+          extensionPaths: [...extensionPaths],
+          skillPaths,
+          ...(systemInstruction?.content === undefined ? {} : { systemPrompt: systemInstruction.content }),
+          toolsEnabled: input.config.tools?.enabled,
+          toolsBlocked: input.config.tools?.blocked ?? [],
+          customTools: customToolReferences,
+          mcpServers: selectPiMcpServers(
+            input.config,
+            input.runtimeContext.environment.env ?? {},
+            process.env,
+            { expandHeaders: false },
+          ),
+        },
+        runtimeDirectory(input),
+        process.execPath,
+        await resolvePiCli(),
+      );
+    }
     let relay: PiRelayRuntime | undefined;
     let handle: PiSdkSessionHandle | undefined;
     let runtimeDir: string | undefined;
@@ -1276,8 +1323,15 @@ export class PiSdkSessionFactory implements PiSessionFactory {
       handle.initialize((enabled ?? session.getActiveToolNames()).filter((name) => !blockedNames.has(name)));
       // bindExtensions emits session_start; emitting it here would create a
       // duplicate Relay session scope.
-      return handle;
+      if (terminal === undefined) {
+        return handle;
+      }
+      await terminal.publish();
+      return new PiTerminalSessionHandle(handle, terminal);
     } catch (error) {
+      await terminal?.withdraw().catch(() => {
+        process.stderr.write("Pi terminal interface cleanup failed after adapter startup error\n");
+      });
       await handle?.stop().catch(() => {
         process.stderr.write("Pi session cleanup failed after adapter startup error\n");
       });
