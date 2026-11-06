@@ -57,6 +57,25 @@
         "type": "string",
         "minLength": 1,
         "description": "Absolute path or environment.workspace-relative path to the NeMo Relay Pi extension matching the CLI release"
+      },
+      "interfaces": {
+        "type": "object",
+        "properties": {
+          "terminal": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "default": true,
+                "description": "Write a launcher for Pi's terminal UI. A present terminal is on unless this is false."
+              }
+            },
+            "additionalProperties": false,
+            "description": "Pi's terminal UI, opened by <artifact root>/.fabric/pi/runtimes/<runtime-id>/interfaces/terminal in a separate session that shares the runtime's model, tools, skills, extensions, MCP servers and system prompt."
+          }
+        },
+        "additionalProperties": false,
+        "description": "Native interfaces offered by the runtime."
       }
     },
     "additionalProperties": false
