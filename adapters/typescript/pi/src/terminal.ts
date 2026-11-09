@@ -115,6 +115,7 @@ export function launcherScript(options: {
   workspace: string;
   descriptor: string;
   args: string[];
+  environment?: Readonly<Record<string, string>>;
 }): string {
   const exports = Object.entries({
     PI_CODING_AGENT_DIR: options.agentDir,
@@ -123,6 +124,7 @@ export function launcherScript(options: {
     PI_OFFLINE: "1",
     PI_SKIP_VERSION_CHECK: "1",
     PI_TELEMETRY: "0",
+    ...options.environment,
   }).map(([name, value]) => `export ${name}=${shellQuote(value)}`);
   return [
     "#!/bin/sh",
@@ -221,6 +223,12 @@ export interface PiTuiDescriptor {
   session_dir: string;
 }
 
+/** What the launcher needs to load the runtime's Relay Pi extension. */
+export interface PiTerminalRelay {
+  readonly extensionPath: string;
+  readonly extensionEnvironment: Readonly<Record<string, string>>;
+}
+
 /** The terminal TUI interface of one runtime. */
 export class PiTerminal {
   readonly launcher: string;
@@ -240,7 +248,8 @@ export class PiTerminal {
    * Write the launcher and the terminal UI's own extensions beside the runtime's agent
    * directory, which the session already wrote; the launcher refuses to run until {@link publish}.
    */
-  static async prepare(plan: PiNativeConfiguration, directory: string, node: string, cli: string): Promise<PiTerminal> {
+  static async prepare(plan: PiNativeConfiguration, directory: string, node: string, cli: string,
+    relay?: PiTerminalRelay): Promise<PiTerminal> {
     const sessionDir = join(directory, "pi-sessions");
     const interfaces = join(directory, "interfaces");
     const descriptorPath = join(interfaces, "tui.json");
@@ -253,7 +262,11 @@ export class PiTerminal {
     await writePrivate(extensions[0]!, supervisorExtension(descriptorPath, clients));
     if (plan.customTools.length > 0) {
       extensions.push(join(interfaces, "fabric-tools.ts"));
-      await writePrivate(extensions[1]!, toolBridgeExtension(plan.workspace, plan.customTools));
+      await writePrivate(extensions.at(-1)!, toolBridgeExtension(plan.workspace, plan.customTools));
+    }
+    // With Relay, terminal turns go through the runtime's gateway as their own Relay sessions.
+    if (relay !== undefined && !plan.extensionPaths.includes(relay.extensionPath)) {
+      extensions.push(relay.extensionPath);
     }
     const launcher = join(interfaces, "terminal");
     await writePrivate(launcher, launcherScript({
@@ -264,6 +277,7 @@ export class PiTerminal {
       workspace: plan.workspace,
       descriptor: descriptorPath,
       args: terminalArguments(plan, extensions),
+      environment: relay?.extensionEnvironment,
     }), 0o700);
     const descriptor: PiTuiDescriptor = {
       version: 1,
@@ -444,7 +458,8 @@ export class PiTerminalSessionFactory implements PiSessionFactory {
           "The Pi session did not report the configuration its terminal UI needs",
         );
       }
-      terminal = await PiTerminal.prepare(handle.configuration, runtimeDirectory(input), process.execPath, await resolvePiCli());
+      terminal = await PiTerminal.prepare(
+        handle.configuration, runtimeDirectory(input), process.execPath, await resolvePiCli(), handle.relay);
       await terminal.publish();
       return new PiTerminalSessionHandle(handle, terminal);
     } catch (error) {
@@ -453,6 +468,9 @@ export class PiTerminalSessionFactory implements PiSessionFactory {
       });
       await handle.stop().catch(() => {
         process.stderr.write("Pi session cleanup failed after adapter startup error\n");
+      });
+      await handle.relay?.stop().catch(() => {
+        process.stderr.write("NeMo Relay cleanup failed after adapter startup error\n");
       });
       throw error;
     }

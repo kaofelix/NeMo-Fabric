@@ -403,8 +403,11 @@ Set `harness.settings.sdk.enabled` to `false`, with the terminal interface
 enabled, for a native-only runtime. It still writes the agent directory and the
 launcher, and your application can still start, check, and stop it, but it runs
 no embedded session: invocation returns a failed `RunResult` with
-`pi_sdk_disabled`, and NeMo Relay telemetry is refused with
-`pi_relay_requires_sdk`.
+`pi_sdk_disabled`.
+
+With NeMo Relay telemetry enabled, the launcher loads the Relay Pi extension on
+the runtime's Relay gateway, with or without the SDK, so Relay captures each
+terminal TUI as its own session, with its own trajectory.
 
 Credentials entered in the terminal TUI, for example with `/login`, are saved in
 the runtime's agent directory, which stays after the runtime stops; supply keys

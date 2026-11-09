@@ -400,14 +400,35 @@ test("a native-only runtime writes Pi's files and the launcher but runs no SDK s
   }
 });
 
-test("a native-only runtime refuses Relay telemetry, which only captures the SDK session", { skip }, async () => {
-  const workspace = await realpath(await mkdtemp(join(tmpdir(), "fabric-pi-native-relay-")));
+test("a native-only runtime with Relay runs the gateway, and the launcher loads the Relay extension on it", { skip }, async () => {
+  const workspace = await realpath(await mkdtemp(join(tmpdir(), "fabric-pi-terminal-relay-")));
+  const extensionPath = join(workspace, "relay-extension");
+  const started = [];
+  const relayFactory = {
+    async start(_input, model) {
+      const relay = {
+        extensionPath,
+        extensionEnvironment: { NEMO_RELAY_PI_GATEWAY_URL: "http://127.0.0.1:1", NEMO_RELAY_PI_OPENAI_UPSTREAM: model.baseUrl },
+        stop: async () => undefined,
+      };
+      started.push(relay);
+      return relay;
+    },
+  };
+  let session;
   try {
     const input = startInput(workspace, "http://127.0.0.1:9/v1", { sdk: { enabled: false }, interfaces: { terminal: {} } });
     input.runtimeContext.telemetry = { relay_enabled: true };
-    await assert.rejects(sessionFactory().create(input), (error) => error.code === "pi_relay_requires_sdk");
-    assert.equal(await exists(join(workspace, "artifacts", ".fabric", "pi", "runtimes", "rt-terminal")), false);
+    session = await new PiTerminalSessionFactory(new PiSdkSessionFactory(relayFactory)).create(input);
+    assert.equal(started.length, 1);
+    // The runtime stops the session's Relay gateway after the session.
+    assert.equal(session.relay, started[0]);
+    const launcher = await readFile(join(workspace, "artifacts", ".fabric", "pi", "runtimes", "rt-terminal", "interfaces", "terminal"), "utf8");
+    assert.match(launcher, /^export NEMO_RELAY_PI_GATEWAY_URL='http:\/\/127\.0\.0\.1:1'$/mu);
+    assert.match(launcher, /^export NEMO_RELAY_PI_OPENAI_UPSTREAM='http:\/\/127\.0\.0\.1:9\/v1'$/mu);
+    assert.ok(launcher.includes(`'--extension' '${extensionPath}'`), launcher);
   } finally {
+    await session?.stop();
     await rm(workspace, { recursive: true, force: true });
   }
 });

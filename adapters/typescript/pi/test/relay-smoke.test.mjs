@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -12,6 +12,7 @@ import { promisify } from "node:util";
 
 import { PiSdkSessionFactory } from "../dist/pi-sdk.js";
 import { PiAdapterRuntime } from "../dist/runtime.js";
+import { PiTerminalSessionFactory } from "../dist/terminal.js";
 
 const execFileAsync = promisify(execFile);
 const relayCommand = process.env.FABRIC_TEST_NEMO_RELAY_COMMAND;
@@ -269,3 +270,117 @@ test(
     }
   },
 );
+
+for (const sdk of [true, false]) {
+  test(
+    `captures terminal TUI turns through the runtime's Relay gateway${sdk ? "" : " without the SDK"}`,
+    { skip: relayCommand === undefined ? "set FABRIC_TEST_NEMO_RELAY_COMMAND to the released CLI" : false, timeout: 90_000 },
+    async () => {
+      const root = await realpath(await mkdtemp(join(tmpdir(), "fabric-pi-relay-terminal-")));
+      const workspace = join(root, "workspace");
+      const home = join(root, "home");
+      const piAgentDir = join(root, "relay-install");
+      const runtimeConfigPath = join(root, "relay-runtime.json");
+      const upstream = createServer(async (request, response) => {
+        for await (const _chunk of request) {
+          // Drain the request.
+        }
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.end(openAiStream("relay terminal ok"));
+      });
+      const upstreamUrl = await listen(upstream);
+      const previousConfigPath = process.env.FABRIC_RELAY_CONFIG_PATH;
+      let runtime;
+      try {
+        await mkdir(workspace);
+        await mkdir(home);
+        await execFileAsync(relayCommand, ["install", "pi", "--skip-doctor"], {
+          env: { ...process.env, PI_CODING_AGENT_DIR: piAgentDir },
+          timeout: 10_000,
+        });
+        const extensionPath = join(piAgentDir, "extensions", "nemo-relay");
+        await writeFile(runtimeConfigPath, JSON.stringify({ relay: { config: { version: 1, components: [{
+          kind: "observability",
+          enabled: true,
+          config: {
+            version: 4,
+            atof: { enabled: true, sinks: [{ type: "file", output_directory: join(root, "atof"), filename: "events.atof.jsonl" }] },
+            atif: { enabled: true, output_directory: join(root, "atif") },
+          },
+        }] } } }));
+        process.env.FABRIC_RELAY_CONFIG_PATH = runtimeConfigPath;
+        const runtimeContext = {
+          artifacts: {},
+          environment: {
+            control_location: "external_control",
+            env: { TEST_API_KEY: "credential-free-smoke" },
+            environment_id: "environment-1",
+            ownership: "caller_owned",
+            provider: "local",
+            workspace,
+          },
+          invocation_id: "start",
+          request_id: "request-start",
+          runtime_id: "relay-terminal",
+          telemetry: { relay_enabled: true },
+        };
+        runtime = new PiAdapterRuntime(new PiTerminalSessionFactory(new PiSdkSessionFactory()));
+        await runtime.start({
+          agentName: "pi-relay-terminal",
+          baseDir: root,
+          config: {
+            harness: {
+              settings: {
+                relay_extension_path: extensionPath,
+                interfaces: { terminal: {} },
+                ...(sdk ? {} : { sdk: { enabled: false } }),
+              },
+            },
+            models: {
+              default: { api_key_env: "TEST_API_KEY", base_url: `${upstreamUrl}/v1`, model: "openai/gpt-oss-20b", provider: "nvidia" },
+            },
+            tools: { enabled: [] },
+          },
+          runtimeContext,
+        });
+        if (sdk) {
+          assert.equal((await runtime.invoke({ input: "Reply from the SDK." }, runtimeContext)).status, "succeeded");
+        }
+        // The launcher carries the Relay extension and its gateway; the person's environment has only the key.
+        const launcher = join(root, "artifacts", ".fabric", "pi", "runtimes", "relay-terminal", "interfaces", "terminal");
+        const child = spawn("/bin/sh", [launcher, "--print", "Reply from the terminal UI."], {
+          cwd: home,
+          env: { PATH: process.env.PATH, HOME: home, TEST_API_KEY: "credential-free-smoke" },
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let output = "";
+        child.stdout.on("data", (chunk) => { output += chunk; });
+        child.stderr.on("data", (chunk) => { output += chunk; });
+        const code = await new Promise((resolve) => child.on("exit", resolve));
+        assert.equal(code, 0, output);
+        assert.match(output, /relay terminal ok/u);
+
+        await runtime.stop();
+        runtime = undefined;
+        const atof = (await readFile(join(root, "atof", "relay-terminal", "events.atof.jsonl"), "utf8"))
+          .trim().split("\n").map((line) => JSON.parse(line));
+        const llmStarts = atof.filter((record) =>
+          record.kind === "scope" && record.category === "llm" && record.scope_category === "start");
+        assert.equal(llmStarts.length, sdk ? 2 : 1);
+        // Each Pi process is its own Relay session with its own trajectory.
+        const atifFiles = await readdir(join(root, "atif", "relay-terminal"));
+        assert.equal(atifFiles.length, sdk ? 2 : 1);
+      } finally {
+        await runtime?.stop().catch(() => undefined);
+        if (previousConfigPath === undefined) {
+          delete process.env.FABRIC_RELAY_CONFIG_PATH;
+        } else {
+          process.env.FABRIC_RELAY_CONFIG_PATH = previousConfigPath;
+        }
+        upstream.closeAllConnections();
+        await new Promise((resolve) => upstream.close(resolve));
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+}

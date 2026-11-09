@@ -346,8 +346,8 @@ the selected model resolves, and publishes the launcher, but it creates no
 embedded session. Your application can still start, check, and stop it through
 the NeMo Fabric SDK. Invocation returns a failed `RunResult` with
 `pi_sdk_disabled`. Startup fails with `pi_no_execution_path` when neither path
-is enabled, and with `pi_relay_requires_sdk` when NeMo Relay telemetry is
-enabled, because Relay captures only the SDK session.
+is enabled. With NeMo Relay telemetry enabled, the runtime still runs its Relay
+gateway, for terminal TUI turns.
 
 ### Open the Terminal TUI
 
@@ -392,6 +392,12 @@ On a `noexec` mount, run it as `sh <launcher path>`.
 - Pi's terminal UI asks no approvals; tools run as configured.
 - Pi runs offline: it doesn't download `fd` or `ripgrep`. Install them in the
   environment to use the tools that need them.
+- With NeMo Relay telemetry enabled, the launcher also loads the configured
+  Relay Pi extension and sets its variables: the runtime's loopback gateway
+  URL, the Relay command, and the model's upstream URL. Terminal UI model
+  requests go through the runtime's gateway, and each terminal UI is its own
+  Relay session, with its own ATIF trajectory under the runtime's Relay output.
+  The gateway stops with the runtime, after open terminal UIs close.
 
 ### Terminal TUI Limitations
 
@@ -404,8 +410,9 @@ On a `noexec` mount, run it as `sh <launcher path>`.
   as the default, write to the shared agent directory. The runtime's session
   loaded the files at start and doesn't see them, and a new runtime writes its
   own directory from FabricConfig.
-- NeMo Relay doesn't capture terminal UI turns, and they produce no NeMo Fabric
-  run results or usage.
+- Terminal UI turns produce no NeMo Fabric run results or usage. With NeMo
+  Relay telemetry enabled, Relay captures them as described below, but they
+  aren't in any invocation's `relay_artifacts`.
 - Open terminal UIs don't change the runtime's health, and their turns aren't
   observed, so a passing check reports activity as `unknown`.
 
