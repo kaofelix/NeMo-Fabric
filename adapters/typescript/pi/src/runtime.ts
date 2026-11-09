@@ -11,6 +11,7 @@ import { LifecycleError, unobservedHealth, type AdapterRuntime, type AdapterStar
 import type { PiNativeConfiguration } from "./native-configuration.js";
 import { collectRelayArtifacts, type RelayArtifact } from "./relay-config.js";
 import type { PiRelayRuntime } from "./relay.js";
+import { executionPaths } from "./settings.js";
 
 export type PiStopReason = "stop" | "length" | "toolUse" | "error" | "aborted" | string;
 
@@ -81,6 +82,7 @@ export class PiAdapterRuntime implements AdapterRuntime {
   private unusable = false;
   private stopping = false;
   private generation = 0;
+  private sdk = true;
 
   constructor(factory: PiSessionFactory) {
     this.factory = factory;
@@ -90,7 +92,10 @@ export class PiAdapterRuntime implements AdapterRuntime {
     if (this.session !== undefined) {
       throw new LifecycleError("pi_already_started", "Pi adapter runtime is already started");
     }
+    // Refuses malformed settings and a runtime with no execution path before anything starts.
+    const { sdk } = executionPaths(input.config);
     this.session = await this.factory.create(input);
+    this.sdk = sdk;
     this.generation += 1;
     this.stopping = false;
     this.turnCount = 0;
@@ -103,6 +108,15 @@ export class PiAdapterRuntime implements AdapterRuntime {
     }
     if (this.unusable) {
       throw new LifecycleError("pi_runtime_unusable", "Pi adapter runtime cannot accept another invocation");
+    }
+    if (!this.sdk) {
+      // Native-only runtime: management and health stay available; invocation fails explicitly.
+      return withRelayOutput(
+        failed("pi_sdk_disabled", "Embedded Pi SDK execution is disabled; use the terminal interface"),
+        undefined,
+        false,
+        0,
+      );
     }
     if (typeof request.input !== "string") {
       const observedTurnCount = this.session.turnCount;

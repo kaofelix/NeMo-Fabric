@@ -17,12 +17,15 @@ import { access, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/p
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { AgentConfig } from "nemo-fabric-adapter-contract";
+import type { AdapterCheckResult, CheckLevel } from "nemo-fabric-adapter-contract";
 import { LifecycleError, type AdapterStartInput } from "nemo-fabric-adapters-common";
 
 import { runtimeDirectory } from "./agent-directory.js";
 import type { PiNativeConfiguration, PiNativeCustomTool } from "./native-configuration.js";
 import type { PiPromptOutcome, PiSessionFactory, PiSessionHandle } from "./runtime.js";
+import { terminalEnabled } from "./settings.js";
+
+export { terminalEnabled };
 
 /** How long `stop` waits for open terminal UIs to shut down after the descriptor is removed. */
 const TERMINAL_SHUTDOWN_GRACE_MS = 5_000;
@@ -34,25 +37,6 @@ const TERMINAL_HEARTBEAT_MS = 500;
 /** How long a terminal UI waits for its orderly shutdown before it sends itself SIGTERM. */
 const TERMINAL_SELF_TERMINATE_MS = 2_000;
 const TOOL_NAME = /^[A-Za-z0-9_.:-]+$/u;
-
-/** Whether the configuration enables Pi's terminal UI interface. */
-export function terminalEnabled(config: AgentConfig): boolean {
-  const interfaces = config.harness?.settings?.interfaces;
-  if (interfaces === undefined || interfaces === null) return false;
-  if (typeof interfaces !== "object" || Array.isArray(interfaces)) {
-    throw new LifecycleError("pi_invalid_settings", "Pi interface settings do not match the adapter schema");
-  }
-  const terminal = (interfaces as Record<string, unknown>).terminal;
-  if (terminal === undefined || terminal === null) return false;
-  if (typeof terminal !== "object" || Array.isArray(terminal)) {
-    throw new LifecycleError("pi_invalid_settings", "Pi interface settings do not match the adapter schema");
-  }
-  const enabled = (terminal as Record<string, unknown>).enabled;
-  if (enabled !== undefined && typeof enabled !== "boolean") {
-    throw new LifecycleError("pi_invalid_settings", "Pi interface settings do not match the adapter schema");
-  }
-  return enabled !== false;
-}
 
 /** The bundled `pi` CLI of the Pi package the adapter's SDK session uses, so both run one version. */
 export async function resolvePiCli(): Promise<string> {
@@ -291,6 +275,17 @@ export class PiTerminal {
     return new PiTerminal(launcher, descriptorPath, descriptor, clients);
   }
 
+  /** Whether a person can open the terminal TUI now: the launcher and the published descriptor exist. */
+  async available(): Promise<boolean> {
+    if (this.withdrawn) return false;
+    try {
+      await Promise.all([access(this.launcher), access(this.descriptorPath)]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** Let the launcher run: publish the descriptor once the runtime is ready. */
   async publish(): Promise<void> {
     await writePrivate(this.descriptorPath, `${JSON.stringify(this.descriptor)}\n`);
@@ -390,9 +385,21 @@ export class PiTerminalSessionHandle implements PiSessionHandle {
     return this.inner.prompt(text);
   }
 
-  check(level: Parameters<PiSessionHandle["check"]>[0]) {
-    // A terminal UI is a separate client; its state doesn't change the runtime's health.
-    return this.inner.check(level);
+  async check(level: CheckLevel): Promise<AdapterCheckResult> {
+    // As for Hermes's native interfaces: the interface must still be offered, and the
+    // runtime's activity is unknown because turns in a terminal TUI aren't observed.
+    // Open terminal TUIs are separate clients and don't change the result.
+    if (level !== "live" && !(await this.terminal.available())) {
+      return {
+        outcome: "failed",
+        reason_code: "endpoint_unavailable",
+        activity: "unknown",
+        source: level === "active" ? "fabric.adapter.interface" : "fabric.adapter.readiness",
+        observed_at: new Date().toISOString(),
+      };
+    }
+    const result = await this.inner.check(level);
+    return result.outcome === "passed" ? { ...result, activity: "unknown" } : result;
   }
 
   async stop(): Promise<void> {

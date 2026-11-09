@@ -32,6 +32,7 @@ import { agentDirectory, runtimeDirectory, writeAgentDirectory } from "./agent-d
 import type { PiNativeConfiguration } from "./native-configuration.js";
 import { invocationUsage } from "./usage.js";
 import type { PiPromptOutcome, PiSessionFactory, PiSessionHandle } from "./runtime.js";
+import { sdkEnabled } from "./settings.js";
 
 // ProviderConfigInput isn't re-exported from pi's public entrypoint; derive it from
 // registerProvider's param type (ModelRuntime's constructor is private, so no InstanceType).
@@ -902,6 +903,46 @@ function unsupportedSessionAction(name: string): never {
   throw new LifecycleError("pi_unsupported_session_operation", `Pi session operation ${name} is not supported`);
 }
 
+/**
+ * A runtime with sdk.enabled false: it owns Pi's files in the agent directory for
+ * the native interfaces but runs no embedded session, so it never takes a prompt.
+ */
+class PiNativeOnlyHandle implements PiSessionHandle {
+  readonly configuration: PiNativeConfiguration;
+  readonly turnCount = 0;
+  private readonly modelRuntime: PiModelRuntime;
+  private readonly expectedModel: { id: string; provider: string };
+  private stopped = false;
+
+  constructor(configuration: PiNativeConfiguration, modelRuntime: PiModelRuntime,
+    expectedModel: { id: string; provider: string }) {
+    this.configuration = configuration;
+    this.modelRuntime = modelRuntime;
+    this.expectedModel = expectedModel;
+  }
+
+  async prompt(): Promise<PiPromptOutcome> {
+    // PiAdapterRuntime answers pi_sdk_disabled before it reaches the handle.
+    throw new LifecycleError("pi_sdk_disabled", "Embedded Pi SDK execution is disabled");
+  }
+
+  async check(level: CheckLevel): Promise<AdapterCheckResult> {
+    if (this.stopped) return { ...unobservedHealth("session_closed"), outcome: "failed", activity: "stopped" };
+    const source: CheckSource = level === "live" ? "fabric.adapter.liveness"
+      : level === "active" ? "fabric.adapter.interface" : "fabric.adapter.readiness";
+    const observed_at = new Date().toISOString();
+    if (level === "ready"
+      && this.modelRuntime.getModel(this.expectedModel.provider, this.expectedModel.id) === undefined) {
+      return { outcome: "failed", reason_code: "health_failed", activity: "unknown", source, observed_at };
+    }
+    return { outcome: "passed", reason_code: null, activity: "unknown", source, observed_at };
+  }
+
+  async stop(): Promise<void> {
+    this.stopped = true;
+  }
+}
+
 class PiSdkSessionHandle implements PiSessionHandle {
   readonly relay?: PiRelayRuntime;
   private readonly session: AgentSession;
@@ -1076,6 +1117,14 @@ export class PiSdkSessionFactory implements PiSessionFactory {
         },
       );
     }
+    const sdk = sdkEnabled(input.config);
+    if (!sdk && input.runtimeContext.telemetry?.relay_enabled === true) {
+      // Relay instruments the SDK session; a native-only runtime has nothing for it to capture.
+      throw new LifecycleError(
+        "pi_relay_requires_sdk",
+        "NeMo Relay captures Pi's SDK session; enable sdk.enabled or disable Relay telemetry",
+      );
+    }
     // Validated here, before anything starts; mcp.json keeps header references unexpanded.
     const mcpConfiguration = selectPiMcpServers(
       input.config,
@@ -1195,6 +1244,10 @@ export class PiSdkSessionFactory implements PiSessionFactory {
       input.runtimeContext.environment.env ?? {},
       process.env,
     );
+    if (!sdk) {
+      // Native-only: the agent directory is written and its model resolves, but no session runs here.
+      return new PiNativeOnlyHandle(configuration, modelRuntime, { id: selected.model, provider: selected.provider });
+    }
     let relay: PiRelayRuntime | undefined;
     let handle: PiSdkSessionHandle | undefined;
     try {
