@@ -5,8 +5,8 @@
 // into a controlled in-memory Pi session, including model credentials, skills,
 // extensions, custom tools, and workspace containment.
 
-import { mkdtemp, realpath, rm, stat } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { readFile, realpath, stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import type { AuthProvider, JsonRpcMessage, McpTransport } from "@earendil-works/pi-mcp";
@@ -28,6 +28,8 @@ import {
   type PiRelayControllerFactory,
   type PiRelayRuntime,
 } from "./relay.js";
+import { agentDirectory, runtimeDirectory, writeAgentDirectory } from "./agent-directory.js";
+import type { PiNativeConfiguration } from "./native-configuration.js";
 import { invocationUsage } from "./usage.js";
 import type { PiPromptOutcome, PiSessionFactory, PiSessionHandle } from "./runtime.js";
 
@@ -256,7 +258,9 @@ export function selectPiMcpServers(
   config: AgentConfig,
   configuredEnvironment: Record<string, string>,
   parentEnvironment: NodeJS.ProcessEnv,
+  options: { expandHeaders?: boolean } = {},
 ): Record<string, McpServerConfig> {
+  const expandHeaders = options.expandHeaders ?? true;
   if (config.mcp?.extensions !== undefined) {
     throw new LifecycleError("pi_mcp_extensions_unsupported", "Pi does not support Fabric MCP extensions");
   }
@@ -321,9 +325,10 @@ export function selectPiMcpServers(
             throw new LifecycleError("pi_mcp_invalid_header", "A configured Pi MCP HTTP header is invalid");
           }
           headerNames.add(normalizedName);
+          // Pi's mcp.json expands ${NAME} references itself, so a written configuration keeps them.
           const expanded = expandMcpHeader(value, configuredEnvironment, parentEnvironment);
           validateMcpHeader(headerName, expanded);
-          return [headerName, expanded];
+          return [headerName, expandHeaders ? expanded : value];
         }),
       );
       selected[name] = {
@@ -347,6 +352,35 @@ export function selectPiMcpServers(
     );
   }
   return selected;
+}
+
+/**
+ * Read the MCP servers from the runtime's mcp.json, expanding each HTTP header's
+ * `${NAME}` references from the runtime's environment, then the adapter's, as
+ * selectPiMcpServers validated them.
+ */
+async function readMcpServers(
+  agentDir: string,
+  configuredEnvironment: Record<string, string>,
+  parentEnvironment: NodeJS.ProcessEnv,
+): Promise<Record<string, McpServerConfig>> {
+  let text: string;
+  try {
+    text = await readFile(join(agentDir, "mcp.json"), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw error;
+  }
+  const servers = (JSON.parse(text) as { mcpServers: Record<string, McpServerConfig> }).mcpServers;
+  return Object.fromEntries(Object.entries(servers).map(([name, server]) => {
+    if (!("headers" in server) || server.headers === undefined) return [name, server];
+    const headers = Object.fromEntries(Object.entries(server.headers).map(([header, value]) => {
+      const expanded = expandMcpHeader(value, configuredEnvironment, parentEnvironment);
+      validateMcpHeader(header, expanded);
+      return [header, expanded];
+    }));
+    return [name, { ...server, headers }];
+  }));
 }
 
 type McpCredentials = NonNullable<McpExtensionOptions["credentials"]>;
@@ -653,7 +687,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-async function resolveToolModule(workspace: string, reference: string): Promise<{ path: string; exportName: string }> {
+export async function resolveToolModule(workspace: string, reference: string): Promise<{ path: string; exportName: string }> {
   const match = /^(?<path>[^#]+?)(?:#(?<export>[A-Za-z_$][\w$]*))?$/.exec(reference);
   const configuredPath = match?.groups?.path;
   if (configuredPath === undefined || isAbsolute(configuredPath)) {
@@ -875,20 +909,20 @@ class PiSdkSessionHandle implements PiSessionHandle {
   private readonly unsubscribeTurnCounter: () => void;
   private stopped = false;
   private cumulativeTurnCount = 0;
-  private readonly runtimeDir: string;
   private initialized = false;
   private requiredTools: readonly string[] = [];
   private readonly nativeSessionId: string;
   private readonly modelRuntime: PiModelRuntime;
   private readonly expectedModel: { id: string; provider: string };
   private readonly connections: Map<string, McpReadiness>;
+  readonly configuration: PiNativeConfiguration;
 
-  constructor(session: AgentSession, state: { shutdownRequested: boolean }, runtimeDir: string,
+  constructor(session: AgentSession, state: { shutdownRequested: boolean },
     modelRuntime: PiModelRuntime, expectedModel: { id: string; provider: string },
-    connections: Map<string, McpReadiness>, relay?: PiRelayRuntime) {
+    connections: Map<string, McpReadiness>, configuration: PiNativeConfiguration, relay?: PiRelayRuntime) {
     this.session = session;
+    this.configuration = configuration;
     this.state = state;
-    this.runtimeDir = runtimeDir;
     this.relay = relay;
     this.modelRuntime = modelRuntime;
     this.expectedModel = expectedModel;
@@ -991,30 +1025,28 @@ class PiSdkSessionHandle implements PiSessionHandle {
       return;
     }
     this.stopped = true;
+    // The runtime's agent directory stays: it holds no secrets, and like other adapters'
+    // runtime directories it remains under the artifact root for inspection.
     let failure: unknown;
     try {
-      try {
-        await this.session.abort();
-      } catch (error) {
-        failure = error;
-      }
-      try {
-        await this.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
-      } catch (error) {
-        failure ??= error;
-      }
-      try {
-        this.unsubscribeTurnCounter();
-      } catch (error) {
-        failure ??= error;
-      }
-      try {
-        this.session.dispose();
-      } catch (error) {
-        failure ??= error;
-      }
-    } finally {
-      await rm(this.runtimeDir, { recursive: true, force: true });
+      await this.session.abort();
+    } catch (error) {
+      failure = error;
+    }
+    try {
+      await this.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+    } catch (error) {
+      failure ??= error;
+    }
+    try {
+      this.unsubscribeTurnCounter();
+    } catch (error) {
+      failure ??= error;
+    }
+    try {
+      this.session.dispose();
+    } catch (error) {
+      failure ??= error;
     }
     if (failure !== undefined) {
       throw failure;
@@ -1044,10 +1076,12 @@ export class PiSdkSessionFactory implements PiSessionFactory {
         },
       );
     }
-    const mcpServers = selectPiMcpServers(
+    // Validated here, before anything starts; mcp.json keeps header references unexpanded.
+    const mcpConfiguration = selectPiMcpServers(
       input.config,
       input.runtimeContext.environment.env ?? {},
       process.env,
+      { expandHeaders: false },
     );
     const pi = await loadPiSdk();
     let workspace: string;
@@ -1069,74 +1103,100 @@ export class PiSdkSessionFactory implements PiSessionFactory {
       throw new LifecycleError("pi_credential_missing", `Credential environment variable ${apiKeyEnv} is not set`);
     }
 
-    // Cache warming can finish outside the prompt and omit aborted refresh usage.
-    // Keep all adapter-owned model work inside the invocation ledger boundary.
-    const settings = pi.SettingsManager.inMemory({ cacheWarming: "off" }, { projectTrusted: false });
     const extensionPaths = await resolveExtensionPaths(workspace, harnessSettings(input.config).extensions);
     const skillPaths = await resolveSkillPaths(input.baseDir, input.config.skills?.paths ?? []);
     const customTools = await resolveCustomTools(workspace, input.config.tools?.definitions ?? {});
-    const credentials = new pi.InMemoryCredentialStore();
-    const modelRuntime = await pi.ModelRuntime.create({
-      credentials,
+
+    // Resolve the selected model as an overlay on Pi's built-in catalog entry (if any): supplied
+    // config fields override, omitted ones keep Pi's native value, and for an unknown (gateway)
+    // model the overlay base is empty so its required metadata must be explicit. This way selecting
+    // a known provider/model and changing nothing preserves all its native properties, while an
+    // explicit base_url / extensions field is still honored. A Fabric agent runs ONE model role per
+    // session (selectModel enforces default-or-sole), mirroring the other single-model adapters.
+    const builtIns = await pi.ModelRuntime.create({
+      credentials: new pi.InMemoryCredentialStore(),
       modelsPath: null,
       allowModelNetwork: false,
       refreshOnCreate: false,
     });
-    await modelRuntime.setRuntimeApiKey(selected.provider, apiKey);
+    // SAFETY: buildCatalogModel builds a plain object of these fields; here it is models.json data.
+    const resolvedEntry = buildCatalogModel(selected, builtIns.getModel(selected.provider, selected.model)) as unknown as
+      Record<string, unknown> & { api?: string; baseUrl?: string; compat?: object; maxTokens?: number; contextWindow?: number };
+    // The OpenAI-compatible-proxy compat shim (see withCustomBaseUrl) goes into the definition
+    // itself, so every process that reads models.json gets it.
+    const catalogEntry = selected.base_url && resolvedEntry.api === "openai-completions"
+      ? { ...resolvedEntry, compat: { ...resolvedEntry.compat, requiresThinkingAsText: true } }
+      : resolvedEntry;
+    const { baseUrl: providerBaseUrl, ...modelDefinition } = catalogEntry;
+    const compactionReserveTokens = modelAwareCompactionReserveTokens(
+      pi.SettingsManager.inMemory({}, { projectTrusted: false }).getCompactionReserveTokens(),
+      catalogEntry.maxTokens ?? 0,
+      catalogEntry.contextWindow ?? 0,
+    );
+    const configuration: PiNativeConfiguration = {
+      agentDir: agentDirectory(runtimeDirectory(input)),
+      workspace,
+      provider: selected.provider,
+      ...(providerBaseUrl === undefined ? {} : { baseUrl: providerBaseUrl }),
+      model: modelDefinition as Record<string, unknown>,
+      apiKeyEnv,
+      compactionReserveTokens,
+      extensionPaths: [...extensionPaths],
+      skillPaths,
+      ...(systemInstruction?.content === undefined ? {} : { systemPrompt: systemInstruction.content }),
+      toolsEnabled: input.config.tools?.enabled,
+      toolsBlocked: input.config.tools?.blocked ?? [],
+      customTools: await Promise.all(
+        Object.entries(input.config.tools?.definitions ?? {}).map(async ([name, definition]) => ({
+          name,
+          ...(await resolveToolModule(workspace, definition.ref)),
+          settings: definition.settings ?? {},
+        })),
+      ),
+      mcpServers: mcpConfiguration,
+    };
 
-    // Register the selected model into Pi's catalog as an overlay on its existing entry (if any):
-    // supplied config fields override, omitted ones keep Pi's native value, and for an unknown
-    // (gateway) model the overlay base is empty so its required metadata must be explicit. This way
-    // selecting a known provider/model and changing nothing preserves all its native properties,
-    // while an explicit base_url / extensions field is still honored. A Fabric agent runs ONE
-    // model role per session (selectModel enforces default-or-sole), mirroring the other
-    // single-model adapters. The selected provider's credential was set above.
-    const existing = modelRuntime.getModel(selected.provider, selected.model);
-    const catalogEntry = buildCatalogModel(selected, existing);
-    try {
-      // Keep the endpoint at provider scope so Relay can redirect it without a
-      // per-model baseUrl taking precedence over the extension's provider override.
-      const { baseUrl, ...modelDefinition } = catalogEntry;
-      modelRuntime.registerProvider(selected.provider, { baseUrl, models: [modelDefinition] });
-    } catch (error) {
-      const cause = error instanceof Error ? error.message : String(error);
-      // Pi throws here with a 'no "api" specified' message when it can't resolve the model's
-      // wire protocol (not a built-in and no extensions.api). Only THAT cause maps to the
-      // api-required remediation; any other registration failure keeps a generic code so the
-      // message isn't misleading.
-      if (/no "api" specified/i.test(cause)) {
+    // Pi's own files are the configuration: this session loads them as Pi's CLI and terminal UI do.
+    const agentDir = configuration.agentDir;
+    await writeAgentDirectory(configuration);
+    const settings = pi.SettingsManager.create(workspace, agentDir, { projectTrusted: false });
+    const modelRuntime = await pi.ModelRuntime.create({
+      // The key stays in memory; models.json only names its variable.
+      credentials: new pi.InMemoryCredentialStore(),
+      modelsPath: join(agentDir, "models.json"),
+      allowModelNetwork: false,
+      refreshOnCreate: false,
+    });
+    const modelsError = modelRuntime.getError();
+    if (modelsError !== undefined) {
+      // Pi reports 'no "api" specified' when it can't resolve the model's wire protocol (not a
+      // built-in and no extensions.api). Only THAT cause maps to the api-required remediation;
+      // any other load failure keeps a generic code so the message isn't misleading.
+      if (/no "api" specified/i.test(modelsError)) {
         throw new LifecycleError(
           "pi_model_api_required",
           `Set extensions.api for a gateway-served model (one of: ${SUPPORTED_MODEL_APIS.join(", ")}); the selected model has no api Pi can resolve`,
-          { metadata: { provider: selected.provider, model: selected.model, cause } },
+          { metadata: { provider: selected.provider, model: selected.model, cause: modelsError } },
         );
       }
       throw new LifecycleError(
         "pi_provider_registration_failed",
         `Pi rejected the configuration for provider '${selected.provider}'`,
-        { metadata: { provider: selected.provider, cause } },
+        { metadata: { provider: selected.provider, cause: modelsError } },
       );
     }
-    const catalogModel = modelRuntime.getModel(selected.provider, selected.model);
-    if (catalogModel === undefined) {
+    await modelRuntime.setRuntimeApiKey(selected.provider, apiKey);
+    const model = modelRuntime.getModel(selected.provider, selected.model);
+    if (model === undefined) {
       throw new LifecycleError("pi_model_unknown", "The selected provider and model are not present in Pi's catalog");
     }
-    // base_url was already applied during registration; withCustomBaseUrl only adds the
-    // OpenAI-compatible-proxy compat shim here (never re-overriding the resolved baseUrl).
-    const model = withCustomBaseUrl(catalogModel, selected.base_url, false);
-    const compactionReserveTokens = modelAwareCompactionReserveTokens(
-      settings.getCompactionReserveTokens(),
-      model.maxTokens ?? 0,
-      model.contextWindow ?? 0,
+    const mcpServers = await readMcpServers(
+      agentDir,
+      input.runtimeContext.environment.env ?? {},
+      process.env,
     );
-    settings.applyOverrides({
-      compaction: {
-        reserveTokens: compactionReserveTokens,
-      },
-    });
     let relay: PiRelayRuntime | undefined;
     let handle: PiSdkSessionHandle | undefined;
-    let runtimeDir: string | undefined;
     try {
       relay = await this.relayFactory.start(input, {
         api: model.api,
@@ -1145,8 +1205,6 @@ export class PiSdkSessionFactory implements PiSessionFactory {
       if (relay !== undefined && !extensionPaths.includes(relay.extensionPath)) {
         extensionPaths.push(relay.extensionPath);
       }
-      runtimeDir = await mkdtemp(join(tmpdir(), "nemo-fabric-pi-"));
-      const agentDir = runtimeDir;
       const mcpConnections = new Map(Object.keys(mcpServers).map((name) => [name, mcpReadiness()]));
       const extensionFactories = Object.keys(mcpServers).length === 0
         ? []
@@ -1175,8 +1233,8 @@ export class PiSdkSessionFactory implements PiSessionFactory {
         noSkills: true,
         noPromptTemplates: true,
         noThemes: true,
+        // The system prompt is <agent dir>/SYSTEM.md, which writeAgentDirectory wrote when one is configured.
         noContextFiles: true,
-        systemPrompt: systemInstruction?.content,
       });
       await resourceLoader.reload();
       const extensionResult = resourceLoader.getExtensions();
@@ -1239,8 +1297,8 @@ export class PiSdkSessionFactory implements PiSessionFactory {
         tools: enabled === null ? undefined : enabled,
         excludeTools: blocked,
       });
-      handle = new PiSdkSessionHandle(session, state, runtimeDir, modelRuntime,
-        { id: model.id, provider: model.provider }, mcpConnections, relay);
+      handle = new PiSdkSessionHandle(session, state, modelRuntime,
+        { id: model.id, provider: model.provider }, mcpConnections, configuration, relay);
       const blockedNames = new Set(blocked);
       const availableNames = new Set(session.getAllTools().map((tool) => tool.name));
       const missing = (enabled ?? []).filter((name) => !blockedNames.has(name) && !availableNames.has(name));
@@ -1284,9 +1342,6 @@ export class PiSdkSessionFactory implements PiSessionFactory {
       await relay?.stop().catch(() => {
         process.stderr.write("NeMo Relay cleanup failed after Pi adapter startup error\n");
       });
-      if (handle === undefined && runtimeDir !== undefined) {
-        await rm(runtimeDir, { recursive: true, force: true });
-      }
       throw error;
     }
   }

@@ -294,6 +294,95 @@ redirects, then prints one JSON document containing `atof_records` and the
 separate terminal `result`. Redirect-decision marks remain in configured Relay
 ATOF artifacts; Pi's startup marks are not included in `atof_records`.
 
+## Agent Directory
+
+Each runtime writes Pi's own configuration files to
+`<artifact root>/.fabric/pi/runtimes/<runtime-id>/pi-agent`, and its Pi session
+loads them from there. The artifact root is the runtime context's artifact
+directory, or `<base_dir>/artifacts`.
+
+| File | Contents |
+| --- | --- |
+| `models.json` | The selected model's definition and endpoint, with `apiKey` set to `$<api_key_env>` |
+| `settings.json` | Startup model, compaction reserve, cache warming off, project trust `never`, install telemetry off |
+| `SYSTEM.md` | The configured system instruction, when one is set |
+| `mcp.json` | The configured MCP servers, with header `${NAME}` references unexpanded |
+
+The files hold no secrets: the session keeps the model key in memory, and
+`models.json` only names its environment variable. Pi may add its own cache
+files, such as `models-store.json`. The directory, readable only by its owner,
+stays after the runtime stops; a new runtime writes its own.
+
+## Terminal TUI
+
+The adapter offers two execution paths:
+
+- **SDK:** NeMo Fabric invocations run in the embedded Pi session and return
+  normalized results.
+- **Terminal TUI:** a person runs Pi's own terminal UI on the runtime's
+  configuration, in a separate conversation.
+
+Unlike the Hermes adapter's terminal TUI, Pi's has no backend service to attach
+to: each terminal TUI is its own Pi process, so the interface takes no port.
+
+**Experimental terminal interface:** The `interfaces.terminal` configuration,
+the launcher, and the `interfaces/tui.json` descriptor and
+`interfaces/tui.clients` registrations may change as NeMo Fabric adopts the
+[launcher contract in #579](https://github.com/NVIDIA/NeMo-Fabric/issues/579).
+Compatibility across releases is not guaranteed for these surfaces.
+
+With `harness.settings.interfaces.terminal` present and `enabled` not `false`,
+the adapter writes an executable launcher to
+`<artifact root>/.fabric/pi/runtimes/<runtime-id>/interfaces/terminal`
+after the session starts. It opens Pi's own terminal UI on the runtime's agent
+directory. In an OpenShell sandbox, a person runs it with:
+
+```bash
+openshell sandbox exec -n SANDBOX --tty -- <launcher path>
+```
+
+On a `noexec` mount, run it as `sh <launcher path>`.
+
+- The launcher runs the `pi` CLI from the Pi package the adapter uses, so the
+  terminal UI and the session run one Pi version; `pi` needn't be on `PATH`.
+- It holds paths and switches, never secrets. Set the model key, under the
+  configured `api_key_env` name, in the environment that runs the launcher.
+- It turns off what the session also turns off: project files, ambient
+  extensions, skills, prompt templates, themes, and context files such as
+  `AGENTS.md`. It passes the configured extensions, skills, and tool policy as
+  flags, and loads Fabric module tools through a generated extension.
+- The terminal UI opens a **separate conversation**, stored under
+  `<runtime directory>/pi-sessions`. The runtime's own conversation is in
+  memory, so the terminal UI can't open it and doesn't see invocations.
+- After the session starts, the adapter publishes an owner-only attachment
+  descriptor, `interfaces/tui.json`. Like the Hermes adapter's, it carries
+  `version`, `mode`, and `workspace`. Pi's has no backend port or token, so its
+  `mode` is `launcher`, and it adds `launcher`, `agent_dir`, and `session_dir`
+  in place of Hermes's `port` and `token_file`. The launcher refuses to start without it, and `stop` removes it
+  first. Each open terminal UI registers itself under `interfaces/tui.clients`,
+  notices the missing descriptor within a second, and closes; `stop` waits up
+  to 5 seconds, then signals any that remain. If the adapter host is killed,
+  the descriptor can remain until the sandbox is replaced.
+- The agent runs as the same user and can modify the launcher.
+- Pi's terminal UI asks no approvals; tools run as configured.
+- Pi runs offline: it doesn't download `fd` or `ripgrep`. Install them in the
+  environment to use the tools that need them.
+
+### Terminal TUI Limitations
+
+- **Credentials typed into the terminal UI are stored in the agent directory.**
+  Pi creates an empty `pi-agent/auth.json` when the terminal UI starts. Signing
+  in with `/login`, or saving a key from the terminal UI, writes that credential
+  there, readable only by its owner, and the agent directory stays after the
+  runtime stops. Supply keys through the environment instead.
+- Changes made from the terminal UI, such as `/settings` or a model switch saved
+  as the default, write to the shared agent directory. The runtime's session
+  loaded the files at start and doesn't see them, and a new runtime writes its
+  own directory from FabricConfig.
+- NeMo Relay doesn't capture terminal UI turns, and they produce no NeMo Fabric
+  run results or usage.
+- A terminal UI's state doesn't change the runtime's health.
+
 ## Runtime Health
 
 Local SDK callers can use `Fabric.check()` with the runtime's environment and

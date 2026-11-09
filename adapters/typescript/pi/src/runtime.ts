@@ -8,6 +8,7 @@
 import type { AdapterCheckResult, CheckLevel, AgentRunRequest, AgentRunResult, AgentUsage, JsonObject, RuntimeContext } from "nemo-fabric-adapter-contract";
 import { LifecycleError, unobservedHealth, type AdapterRuntime, type AdapterStartInput } from "nemo-fabric-adapters-common";
 
+import type { PiNativeConfiguration } from "./native-configuration.js";
 import { collectRelayArtifacts, type RelayArtifact } from "./relay-config.js";
 import type { PiRelayRuntime } from "./relay.js";
 
@@ -27,6 +28,8 @@ export interface PiPromptOutcome {
 export interface PiSessionHandle {
   readonly relay?: PiRelayRuntime;
   readonly turnCount?: number;
+  /** What the session resolved from FabricConfig, for native interfaces that share it. */
+  readonly configuration?: PiNativeConfiguration;
   prompt(text: string): Promise<PiPromptOutcome>;
   stop(): Promise<void>;
   check(level: CheckLevel): Promise<AdapterCheckResult>;

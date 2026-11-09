@@ -18,11 +18,13 @@ const manifest = createRequire(import.meta.url)("../package.json") as {
 assertSupportedNodeVersion(process.versions.node, manifest.engines?.node);
 
 await serve(async () => {
-  const [{ PiSdkSessionFactory }, { PiAdapterRuntime }] = await Promise.all([
+  const [{ PiSdkSessionFactory }, { PiAdapterRuntime }, { PiTerminalSessionFactory }] = await Promise.all([
     import("./pi-sdk.js"),
     import("./runtime.js"),
+    import("./terminal.js"),
   ]);
-  return new PiAdapterRuntime(new PiSdkSessionFactory());
+  // The terminal interface wraps the SDK session; without interfaces.terminal it passes through.
+  return new PiAdapterRuntime(new PiTerminalSessionFactory(new PiSdkSessionFactory()));
 }, {
   software: {
     packageJson: new URL("../package.json", import.meta.url),
