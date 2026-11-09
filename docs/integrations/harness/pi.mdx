@@ -389,12 +389,15 @@ Set `harness.settings.interfaces.terminal` to `{}` to have the runtime write a
 launcher, `<artifact root>/.fabric/pi/runtimes/<runtime-id>/interfaces/terminal`.
 In an OpenShell sandbox, run it with
 `openshell sandbox exec -n SANDBOX --tty -- <launcher path>`, with the model
-key set under the configured `api_key_env` name. Once the runtime is ready, it
+key set under the configured `api_key_env` name and any proxy or certificate
+variables the model endpoint needs; the launcher doesn't pass on the runtime
+environment's variables. Each launch starts a new conversation; pass Pi's
+`--session <path|id>` or `--resume` to continue a saved one. Once the runtime is ready, it
 publishes an owner-only `interfaces/tui.json` attachment descriptor. It shares
 `version`, `mode`, and `workspace` with the Hermes adapter's descriptor; its
 `launcher` mode names the launcher and Pi's agent and session directories
-instead of a backend port and token. The launcher refuses to start without it, and stopping the
-runtime removes it and closes open terminal TUIs.
+instead of a backend port and token. The launcher refuses to start without it,
+and stopping the runtime removes it and closes open terminal TUIs.
 
 Set `harness.settings.sdk.enabled` to `false`, with the terminal interface
 enabled, for a native-only runtime. It still writes the agent directory and the

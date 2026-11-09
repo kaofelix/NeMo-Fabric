@@ -307,10 +307,11 @@ export class PiTerminal {
       await new Promise((resolve) => setTimeout(resolve, 100));
       remaining = await this.liveTerminals();
     }
-    if (remaining.length === 0) return;
-    signal(remaining, "SIGTERM");
-    await new Promise((resolve) => setTimeout(resolve, TERMINAL_KILL_GRACE_MS));
-    signal(await this.liveTerminals(), "SIGKILL");
+    if (remaining.length > 0) {
+      signal(remaining, "SIGTERM");
+      await new Promise((resolve) => setTimeout(resolve, TERMINAL_KILL_GRACE_MS));
+      signal(await this.liveTerminals(), "SIGKILL");
+    }
     await rm(this.clients, { recursive: true, force: true });
   }
 
@@ -387,9 +388,9 @@ export class PiTerminalSessionHandle implements PiSessionHandle {
   }
 
   async check(level: CheckLevel): Promise<AdapterCheckResult> {
-    // As for Hermes's native interfaces: the interface must still be offered, and the
-    // runtime's activity is unknown because turns in a terminal TUI aren't observed.
-    // Open terminal TUIs are separate clients and don't change the result.
+    // As for Hermes's native interfaces, the interface must still be offered. Open
+    // terminal TUIs are separate clients and don't change the outcome, but their turns
+    // aren't observed, so a passing result reports activity as unknown.
     if (level !== "live" && !(await this.terminal.available())) {
       return {
         outcome: "failed",
