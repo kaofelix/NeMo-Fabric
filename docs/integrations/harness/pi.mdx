@@ -368,6 +368,32 @@ adapter process. Ordered invocations reuse that session and its conversation
 history until the runtime stops. Start a new runtime to change the model,
 skills, extensions, custom tools, or workspace.
 
+The runtime writes Pi's own configuration files, without secrets, to
+`<artifact root>/.fabric/pi/runtimes/<runtime-id>/pi-agent`, and the session
+loads them from there. The directory stays after the runtime stops.
+
+## Use the Terminal TUI
+
+Pi offers two execution paths: the **SDK**, which runs NeMo Fabric invocations
+in the embedded session, and the **terminal TUI**, Pi's own terminal UI on the
+runtime's configuration in a separate conversation. Each terminal TUI is its own
+Pi process, so unlike the Hermes terminal TUI, it takes no port.
+
+Set `harness.settings.interfaces.terminal` to `{}` to have the runtime write a
+launcher, `<artifact root>/.fabric/pi/runtimes/<runtime-id>/interfaces/terminal`.
+In an OpenShell sandbox, run it with
+`openshell sandbox exec -n SANDBOX --tty -- <launcher path>`, with the model
+key set under the configured `api_key_env` name. Once the runtime is ready, it
+publishes an owner-only `interfaces/tui.json` attachment descriptor, as the
+Hermes adapter does; the launcher refuses to start without it, and stopping the
+runtime removes it and closes open terminal TUIs.
+
+Credentials entered in the terminal TUI, for example with `/login`, are saved in
+the runtime's agent directory, which stays after the runtime stops; supply keys
+through the environment instead. Refer to the
+[adapter README](https://github.com/NVIDIA/NeMo-Fabric/blob/main/adapters/typescript/pi/README.md#terminal-tui)
+for the launcher's behavior and limitations.
+
 ## Current Limitations
 
 The current adapter does not expose native OpenAI streaming, caller-driven

@@ -2803,6 +2803,25 @@
               "type": "array",
               "uniqueItems": true
             },
+            "interfaces": {
+              "additionalProperties": false,
+              "description": "Native interfaces offered by the runtime.",
+              "properties": {
+                "terminal": {
+                  "additionalProperties": false,
+                  "description": "Pi's terminal TUI, which runs in its own process and needs no port: the launcher <artifact root>/.fabric/pi/runtimes/<runtime-id>/interfaces/terminal opens it on the runtime's agent directory in a separate conversation. Writes interfaces/terminal and, once the runtime is ready, interfaces/tui.json.",
+                  "properties": {
+                    "enabled": {
+                      "default": true,
+                      "description": "Offer Pi's terminal TUI. A present terminal interface is on unless this is false.",
+                      "type": "boolean"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            },
             "relay_extension_path": {
               "description": "Absolute path or environment.workspace-relative path to the NeMo Relay Pi extension matching the CLI release",
               "minLength": 1,
@@ -2850,7 +2869,7 @@
         "name": "nemo-fabric-adapters-pi",
         "version": "0.7.0"
       },
-      "sha256": "1d3f4b6933689530782ba0ebd019ca9af3476a8f9b7d5b955783d0a59b743283",
+      "sha256": "7c7b447e48665f9828bc069324d0b8f8a0bb0f00736ef1179a64da4f88dd50f8",
       "source": "adapters/typescript/pi/pi.fabric-adapter.json"
     },
     "nvidia.fabric.qwen": {
