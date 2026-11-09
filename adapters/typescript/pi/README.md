@@ -359,15 +359,20 @@ On a `noexec` mount, run it as `sh <launcher path>`.
 
 - The launcher runs the `pi` CLI from the Pi package the adapter uses, so the
   terminal UI and the session run one Pi version; `pi` needn't be on `PATH`.
-- It holds paths and switches, never secrets. Set the model key, under the
-  configured `api_key_env` name, in the environment that runs the launcher.
+- It holds paths and switches, never secrets, and doesn't pass on the runtime
+  environment's variables. Set the model key, under the configured
+  `api_key_env` name, in the environment that runs the launcher, with any proxy
+  or certificate variables the model endpoint needs, such as `HTTPS_PROXY` and
+  `SSL_CERT_FILE`.
 - It turns off what the session also turns off: project files, ambient
   extensions, skills, prompt templates, themes, and context files such as
   `AGENTS.md`. It passes the configured extensions, skills, and tool policy as
   flags, and loads Fabric module tools through a generated extension.
 - The terminal UI opens a **separate conversation**, stored under
   `<runtime directory>/pi-sessions`. The runtime's own conversation is in
-  memory, so the terminal UI can't open it and doesn't see invocations.
+  memory, so the terminal UI can't open it and doesn't see invocations. Each
+  launch starts a new conversation; to continue a saved one, pass Pi's
+  `--session <path|id>` or `--resume` to the launcher, or use `/resume`.
 - After the session starts, the adapter publishes an owner-only attachment
   descriptor, `interfaces/tui.json`, in the shape the Hermes adapter uses:
   `version`, `mode` (`launcher`), `launcher`, `workspace`, `agent_dir`, and
@@ -394,8 +399,8 @@ On a `noexec` mount, run it as `sh <launcher path>`.
   own directory from FabricConfig.
 - NeMo Relay doesn't capture terminal UI turns, and they produce no NeMo Fabric
   run results or usage.
-- Open terminal UIs don't change the runtime's health, and with the terminal
-  interface enabled the runtime reports its activity as `unknown`.
+- Open terminal UIs don't change the runtime's health, and their turns aren't
+  observed, so a passing check reports activity as `unknown`.
 
 ## Runtime Health
 
@@ -409,10 +414,15 @@ exact runtime ID. Pi supports three ordered health levels:
 | `ready` | Earlier levels plus the selected model remaining configured, required tools remaining active or callable through other tools, and required MCP transports having no observed error or closure. |
 
 With the terminal interface enabled, `active` and `ready` also require the
-launcher and `interfaces/tui.json` to exist, and passing results report activity
-as `unknown`, since terminal TUI turns aren't observed. With `sdk.enabled: false`,
-no session is inspected: `live` passes until stop, and `ready` requires the
-selected model to resolve from the agent directory's `models.json`.
+launcher and `interfaces/tui.json` to exist, and a passing check reports
+activity as `unknown`, as the Hermes adapter does for its native interfaces,
+because terminal UI turns aren't observed. With `sdk.enabled: false`, no session
+is inspected: `live` passes until stop, and `ready` requires the selected model
+to resolve from the agent directory's `models.json`; this is native-only
+evidence, not a check of an SDK session. NeMo Fabric accepts a passing check
+with `unknown` activity only from a core that allows it, as proposed in
+[#616](https://github.com/NVIDIA/NeMo-Fabric/pull/616); earlier cores report
+such a check as `probe_error`.
 
 Health probes use an authenticated channel during invocations. MCP failures and closures remain observable after startup. Stop and ownership changes invalidate observations collected in flight.
 

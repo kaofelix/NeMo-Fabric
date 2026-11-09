@@ -281,6 +281,10 @@ test("the launcher opens Pi on the runtime's model, key variable and system prom
     });
     assert.equal((await stat(launcher)).mode & 0o777, 0o700);
     assert.equal((await stat(join(directory, "interfaces"))).mode & 0o777, 0o700);
+    // As for Hermes's native interfaces, terminal turns aren't observed, so activity is unknown.
+    const health = await session.check("ready");
+    assert.equal(health.outcome, "passed");
+    assert.equal(health.activity, "unknown");
     for (const file of await filesUnder(directory)) {
       assert.doesNotMatch(await readFile(file, "utf8"), new RegExp(RUNTIME_KEY), `${file} holds the runtime's key`);
     }
@@ -345,6 +349,7 @@ test("stopping the runtime closes an open terminal UI before the session stops",
     assert.equal(exit.signal, null, "the terminal UI should shut itself down, not be killed");
     assert.ok([0, 143].includes(exit.code), `exit ${exit.code}: ${exit.stderr}`);
     assert.ok(Date.now() - started < 5_000, "stop waited for the terminal UI's grace period to expire");
+    assert.equal(await exists(registry), false, "stop leaves the terminal UI registrations behind");
   } finally {
     terminal?.child.kill("SIGKILL");
     await session?.stop();

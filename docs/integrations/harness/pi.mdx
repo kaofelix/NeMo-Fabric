@@ -383,7 +383,10 @@ Set `harness.settings.interfaces.terminal` to `{}` to have the runtime write a
 launcher, `<artifact root>/.fabric/pi/runtimes/<runtime-id>/interfaces/terminal`.
 In an OpenShell sandbox, run it with
 `openshell sandbox exec -n SANDBOX --tty -- <launcher path>`, with the model
-key set under the configured `api_key_env` name. Once the runtime is ready, it
+key set under the configured `api_key_env` name and any proxy or certificate
+variables the model endpoint needs; the launcher doesn't pass on the runtime
+environment's variables. Each launch starts a new conversation; pass Pi's
+`--session <path|id>` or `--resume` to continue a saved one. Once the runtime is ready, it
 publishes an owner-only `interfaces/tui.json` attachment descriptor, as the
 Hermes adapter does; the launcher refuses to start without it, and stopping the
 runtime removes it and closes open terminal TUIs.

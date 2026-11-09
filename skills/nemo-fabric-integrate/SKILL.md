@@ -173,6 +173,8 @@ construction.
 
 ## Choose A Lifecycle
 
+For Pi, `harness.settings.interfaces.terminal` writes a launcher that opens Pi's own terminal UI on the runtime's configuration in a separate conversation. Embedded SDK execution stays enabled by default; set `harness.settings.sdk.enabled=False` only with the terminal interface enabled, for a runtime that only configures Pi for its terminal UI. Management through the SDK remains available, invocation fails with `pi_sdk_disabled`, and Relay telemetry requires the SDK.
+
 For Deep Agents, mini-SWE-agent, and the LangGraph custom-agent example, pass the same UUID string through `RunRequest.relay_session_root` on each conversation turn to group Relay trajectories under one session. Core forwards the typed field as `AgentRunRequest.relay_session_root`; context keys do not control Relay propagation. An unusable UUID preserves per-request behavior. The remaining adapters do not consume this field.
 
 Pick the smallest lifecycle the consumer needs:
