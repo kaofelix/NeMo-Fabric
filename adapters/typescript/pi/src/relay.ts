@@ -121,10 +121,22 @@ function reserveRelayEnvironment(): () => void {
   };
 }
 
+/** The variables the Relay Pi extension reads: the gateway, its command, and the model's upstream. */
+function relayExtensionEnvironment(gatewayUrl: string, executable: string, model: PiRelayModel): Record<string, string> {
+  const environment: Record<string, string> = {
+    NEMO_RELAY_PI_COMMAND: executable,
+    NEMO_RELAY_PI_GATEWAY_URL: gatewayUrl,
+  };
+  if (model.api === "openai-completions" || model.api === "openai-responses") {
+    environment.NEMO_RELAY_PI_OPENAI_UPSTREAM = model.baseUrl;
+  } else if (model.api === "anthropic-messages") {
+    environment.NEMO_RELAY_PI_ANTHROPIC_UPSTREAM = model.baseUrl;
+  }
+  return environment;
+}
+
 function setRelayEnvironment(
-  gatewayUrl: string,
-  executable: string,
-  model: PiRelayModel,
+  environment: Record<string, string>,
   releaseReservation: () => void,
 ): () => void {
   const previous = new Map<string, string | undefined>();
@@ -132,13 +144,7 @@ function setRelayEnvironment(
     previous.set(name, process.env[name]);
     delete process.env[name];
   }
-  process.env.NEMO_RELAY_PI_COMMAND = executable;
-  process.env.NEMO_RELAY_PI_GATEWAY_URL = gatewayUrl;
-  if (model.api === "openai-completions" || model.api === "openai-responses") {
-    process.env.NEMO_RELAY_PI_OPENAI_UPSTREAM = model.baseUrl;
-  } else if (model.api === "anthropic-messages") {
-    process.env.NEMO_RELAY_PI_ANTHROPIC_UPSTREAM = model.baseUrl;
-  }
+  Object.assign(process.env, environment);
   let restored = false;
   return () => {
     if (restored) {
@@ -161,6 +167,8 @@ function setRelayEnvironment(
 
 export class PiRelayRuntime {
   readonly extensionPath: string;
+  /** What the Relay Pi extension needs in another Pi process, such as the terminal TUI; no secrets. */
+  readonly extensionEnvironment: Readonly<Record<string, string>>;
   readonly pluginConfig: RelayPluginConfig;
   readonly atifMatchers: RelayAtifMatcher[];
   private readonly child: ChildProcess;
@@ -172,6 +180,7 @@ export class PiRelayRuntime {
 
   constructor(options: {
     extensionPath: string;
+    extensionEnvironment?: Record<string, string>;
     pluginConfig: RelayPluginConfig;
     atifMatchers: RelayAtifMatcher[];
     child: ChildProcess;
@@ -181,6 +190,7 @@ export class PiRelayRuntime {
     stopGateway?: typeof stopRelayGateway;
   }) {
     this.extensionPath = options.extensionPath;
+    this.extensionEnvironment = { ...(options.extensionEnvironment ?? {}) };
     this.pluginConfig = options.pluginConfig;
     this.atifMatchers = options.atifMatchers;
     this.child = options.child;
@@ -323,9 +333,11 @@ export class PiRelayFactory implements PiRelayControllerFactory {
           metadata: relayErrorMetadata(error, { gateway_log_path: launch.logPath }),
         });
       }
-      restoreEnvironment = setRelayEnvironment(launch.url, executable, model, releaseEnvironment);
+      const extensionEnvironment = relayExtensionEnvironment(launch.url, executable, model);
+      restoreEnvironment = setRelayEnvironment(extensionEnvironment, releaseEnvironment);
       const runtime = new PiRelayRuntime({
         extensionPath,
+        extensionEnvironment,
         pluginConfig,
         atifMatchers,
         child,

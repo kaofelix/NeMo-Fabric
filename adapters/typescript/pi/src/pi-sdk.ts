@@ -910,13 +910,15 @@ function unsupportedSessionAction(name: string): never {
 class PiNativeOnlyHandle implements PiSessionHandle {
   readonly configuration: PiNativeConfiguration;
   readonly turnCount = 0;
+  readonly relay?: PiRelayRuntime;
   private readonly modelRuntime: PiModelRuntime;
   private readonly expectedModel: { id: string; provider: string };
   private stopped = false;
 
   constructor(configuration: PiNativeConfiguration, modelRuntime: PiModelRuntime,
-    expectedModel: { id: string; provider: string }) {
+    expectedModel: { id: string; provider: string }, relay?: PiRelayRuntime) {
     this.configuration = configuration;
+    this.relay = relay;
     this.modelRuntime = modelRuntime;
     this.expectedModel = expectedModel;
   }
@@ -1118,13 +1120,6 @@ export class PiSdkSessionFactory implements PiSessionFactory {
       );
     }
     const sdk = sdkEnabled(input.config);
-    if (!sdk && input.runtimeContext.telemetry?.relay_enabled === true) {
-      // Relay instruments the SDK session; a native-only runtime has nothing for it to capture.
-      throw new LifecycleError(
-        "pi_relay_requires_sdk",
-        "NeMo Relay captures Pi's SDK session; enable sdk.enabled or disable Relay telemetry",
-      );
-    }
     // Validated here, before anything starts; mcp.json keeps header references unexpanded.
     const mcpConfiguration = selectPiMcpServers(
       input.config,
@@ -1245,8 +1240,10 @@ export class PiSdkSessionFactory implements PiSessionFactory {
       process.env,
     );
     if (!sdk) {
-      // Native-only: the agent directory is written and its model resolves, but no session runs here.
-      return new PiNativeOnlyHandle(configuration, modelRuntime, { id: selected.model, provider: selected.provider });
+      // Native-only: the agent directory is written and its model resolves, but no session runs
+      // here. A Relay gateway still runs for the terminal TUI's turns.
+      const relay = await this.relayFactory.start(input, { api: model.api, baseUrl: model.baseUrl });
+      return new PiNativeOnlyHandle(configuration, modelRuntime, { id: selected.model, provider: selected.provider }, relay);
     }
     let relay: PiRelayRuntime | undefined;
     let handle: PiSdkSessionHandle | undefined;
