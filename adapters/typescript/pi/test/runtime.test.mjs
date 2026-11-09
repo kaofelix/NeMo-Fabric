@@ -557,3 +557,56 @@ test("retries Relay cleanup when gateway shutdown fails", async () => {
   assert.equal(sessionStopAttempts, 2);
   assert.equal(relayStopAttempts, 2);
 });
+
+function startInputWith(settings) {
+  const input = startInput();
+  return { ...input, config: { harness: { settings } } };
+}
+
+test("a native-only runtime answers invocation with pi_sdk_disabled without prompting", async () => {
+  let prompted = false;
+  const runtime = new PiAdapterRuntime({
+    async create() {
+      return {
+        async prompt() {
+          prompted = true;
+          return { accepted: true, turnStarted: true, turnCount: 1, text: "ok" };
+        },
+        async check() {
+          return { outcome: "passed", reason_code: null, activity: "unknown", source: "fabric.adapter.liveness", observed_at: null };
+        },
+        async stop() {},
+      };
+    },
+  });
+  await runtime.start(startInputWith({ sdk: { enabled: false }, interfaces: { terminal: {} } }));
+  const result = await runtime.invoke({ input: "hello" }, context);
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "pi_sdk_disabled");
+  assert.deepEqual(result.extensions, { pi_turn_count: 0, pi_turn_started: false });
+  assert.equal(prompted, false);
+  // Runtime management stays available.
+  assert.equal((await runtime.check("live")).outcome, "passed");
+  await runtime.stop();
+});
+
+test("a runtime with neither the SDK nor the terminal interface is refused before the session starts", async () => {
+  let created = false;
+  const runtime = new PiAdapterRuntime({
+    async create() {
+      created = true;
+      return { async prompt() {}, async stop() {} };
+    },
+  });
+  for (const settings of [
+    { sdk: { enabled: false } },
+    { sdk: { enabled: false }, interfaces: { terminal: { enabled: false } } },
+  ]) {
+    await assert.rejects(runtime.start(startInputWith(settings)), (error) => error.code === "pi_no_execution_path");
+  }
+  await assert.rejects(
+    runtime.start(startInputWith({ sdk: { enabled: "false" }, interfaces: { terminal: {} } })),
+    (error) => error.code === "pi_invalid_settings",
+  );
+  assert.equal(created, false);
+});

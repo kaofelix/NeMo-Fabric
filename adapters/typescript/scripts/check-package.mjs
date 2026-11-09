@@ -88,6 +88,8 @@ const expectedByPackage = {
     "dist/relay.js",
     "dist/runtime.d.ts",
     "dist/runtime.js",
+    "dist/settings.d.ts",
+    "dist/settings.js",
     "dist/terminal.d.ts",
     "dist/terminal.js",
     "package.json",

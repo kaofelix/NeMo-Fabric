@@ -2901,6 +2901,48 @@
         },
         "settings_schema": {
           "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "sdk": {
+                    "properties": {
+                      "enabled": {
+                        "const": false
+                      }
+                    },
+                    "required": [
+                      "enabled"
+                    ]
+                  }
+                },
+                "required": [
+                  "sdk"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "interfaces": {
+                    "properties": {
+                      "terminal": {
+                        "properties": {
+                          "enabled": {
+                            "const": true
+                          }
+                        }
+                      }
+                    },
+                    "required": [
+                      "terminal"
+                    ]
+                  }
+                },
+                "required": [
+                  "interfaces"
+                ]
+              }
+            }
+          ],
           "properties": {
             "extensions": {
               "items": {
@@ -2952,6 +2994,18 @@
               "description": "Absolute path or environment.workspace-relative path to the NeMo Relay Pi extension matching the CLI release",
               "minLength": 1,
               "type": "string"
+            },
+            "sdk": {
+              "additionalProperties": false,
+              "description": "Embedded SDK execution, enabled by default. Runtime management remains available when disabled.",
+              "properties": {
+                "enabled": {
+                  "default": true,
+                  "description": "Initialize the embedded SDK session during startup. Disable for native-only execution; SDK invocation then fails explicitly.",
+                  "type": "boolean"
+                }
+              },
+              "type": "object"
             }
           },
           "type": "object"
@@ -2995,7 +3049,7 @@
         "name": "nemo-fabric-adapters-pi",
         "version": "0.7.0"
       },
-      "sha256": "3e75bb1e43d991e08f938f9c59ae5f47b2f791d8b0cb0165c81edd657697150b",
+      "sha256": "107e19595acad1b2e9d56a2198cb15c050f3828a9883870cec76989d0eaa8647",
       "source": "adapters/typescript/pi/pi.fabric-adapter.json"
     },
     "nvidia.fabric.qwen": {

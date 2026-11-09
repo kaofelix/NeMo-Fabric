@@ -331,6 +331,26 @@ the launcher, and the `interfaces/tui.json` descriptor and
 [launcher contract in #579](https://github.com/NVIDIA/NeMo-Fabric/issues/579).
 Compatibility across releases is not guaranteed for these surfaces.
 
+### Native-Only Runtimes
+
+Set `harness.settings.sdk.enabled` to `false`, with the terminal interface
+enabled, for a runtime that only configures Pi for its terminal TUI:
+
+```python
+config.harness.settings["sdk"] = {"enabled": False}
+config.harness.settings["interfaces"] = {"terminal": {}}
+```
+
+The runtime still resolves FabricConfig, writes the agent directory, checks that
+the selected model resolves, and publishes the launcher, but it creates no
+embedded session. Your application can still start, check, and stop it through
+the NeMo Fabric SDK. Invocation returns a failed `RunResult` with
+`pi_sdk_disabled`. Startup fails with `pi_no_execution_path` when neither path
+is enabled, and with `pi_relay_requires_sdk` when NeMo Relay telemetry is
+enabled, because Relay captures only the SDK session.
+
+### Open the Terminal TUI
+
 With `harness.settings.interfaces.terminal` present and `enabled` not `false`,
 the adapter writes an executable launcher to
 `<artifact root>/.fabric/pi/runtimes/<runtime-id>/interfaces/terminal`
@@ -381,7 +401,8 @@ On a `noexec` mount, run it as `sh <launcher path>`.
   own directory from FabricConfig.
 - NeMo Relay doesn't capture terminal UI turns, and they produce no NeMo Fabric
   run results or usage.
-- A terminal UI's state doesn't change the runtime's health.
+- Open terminal UIs don't change the runtime's health, and with the terminal
+  interface enabled the runtime reports its activity as `unknown`.
 
 ## Runtime Health
 
@@ -393,6 +414,12 @@ exact runtime ID. Pi supports three ordered health levels:
 | `live` | Completed initialization, unchanged session identity, and a fresh native `extensionRunner.createContext().isIdle()` response. Both idle and busy responses pass. |
 | `active` | Liveness plus completed extension binding and an available request interface. |
 | `ready` | Earlier levels plus the selected model remaining configured, required tools remaining active or callable through other tools, and required MCP transports having no observed error or closure. |
+
+With the terminal interface enabled, `active` and `ready` also require the
+launcher and `interfaces/tui.json` to exist, and passing results report activity
+as `unknown`, since terminal TUI turns aren't observed. With `sdk.enabled: false`,
+no session is inspected: `live` passes until stop, and `ready` requires the
+selected model to resolve from the agent directory's `models.json`.
 
 Health probes use an authenticated channel during invocations. MCP failures and closures remain observable after startup. Stop and ownership changes invalidate observations collected in flight.
 

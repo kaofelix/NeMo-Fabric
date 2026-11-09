@@ -10,6 +10,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { PiSdkSessionFactory } from "../dist/pi-sdk.js";
+import { sdkEnabled } from "../dist/settings.js";
 import { launcherScript, PiTerminalSessionFactory, terminalArguments, terminalEnabled } from "../dist/terminal.js";
 
 const [major, minor] = process.versions.node.split(".").map(Number);
@@ -137,6 +138,13 @@ test("terminalEnabled follows interfaces.terminal and its enabled switch", () =>
   assert.equal(terminalEnabled({ harness: { settings: { interfaces: { terminal: {} } } } }), true);
   assert.equal(terminalEnabled({ harness: { settings: { interfaces: { terminal: { enabled: false } } } } }), false);
   assert.throws(() => terminalEnabled({ harness: { settings: { interfaces: { terminal: true } } } }), /schema/);
+});
+
+test("sdkEnabled is on unless sdk.enabled is false", () => {
+  assert.equal(sdkEnabled({}), true);
+  assert.equal(sdkEnabled({ harness: { settings: { sdk: {} } } }), true);
+  assert.equal(sdkEnabled({ harness: { settings: { sdk: { enabled: false } } } }), false);
+  assert.throws(() => sdkEnabled({ harness: { settings: { sdk: false } } }), /schema/);
 });
 
 test("terminal arguments reproduce the embedded session's isolation and tool policy", () => {
@@ -344,5 +352,57 @@ test("stopping the runtime closes an open terminal UI before the session stops",
     server.close();
     await rm(workspace, { recursive: true, force: true });
     await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("a native-only runtime writes Pi's files and the launcher but runs no SDK session", { skip, timeout: 60_000 }, async () => {
+  const workspace = await realpath(await mkdtemp(join(tmpdir(), "fabric-pi-native-only-")));
+  const home = await realpath(await mkdtemp(join(tmpdir(), "fabric-pi-native-only-home-")));
+  const { server, requests, url } = await modelServer();
+  const directory = join(workspace, "artifacts", ".fabric", "pi", "runtimes", "rt-terminal");
+  const launcher = join(directory, "interfaces", "terminal");
+  const descriptor = join(directory, "interfaces", "tui.json");
+  let session;
+  try {
+    session = await sessionFactory().create(
+      startInput(workspace, url, { sdk: { enabled: false }, interfaces: { terminal: {} } }),
+    );
+    assert.equal(session.relay, undefined);
+    assert.equal(await exists(join(directory, "pi-agent", "models.json")), true);
+    assert.equal(await exists(descriptor), true);
+    for (const level of ["live", "active", "ready"]) {
+      const health = await session.check(level);
+      assert.equal(health.outcome, "passed", level);
+      assert.equal(health.activity, "unknown", level);
+    }
+
+    const run = await launch(launcher, home, ["--print", "say hello"]).exited;
+    assert.equal(run.code, 0, run.stderr);
+    assert.match(run.stdout, /terminal-answer/);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].authorization, `Bearer ${TERMINAL_KEY}`);
+
+    // A withdrawn interface fails the runtime's active and ready checks.
+    await rm(descriptor);
+    assert.equal((await session.check("live")).outcome, "passed");
+    assert.equal((await session.check("ready")).reason_code, "endpoint_unavailable");
+  } finally {
+    await session?.stop();
+    server.closeAllConnections();
+    server.close();
+    await rm(workspace, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("a native-only runtime refuses Relay telemetry, which only captures the SDK session", { skip }, async () => {
+  const workspace = await realpath(await mkdtemp(join(tmpdir(), "fabric-pi-native-relay-")));
+  try {
+    const input = startInput(workspace, "http://127.0.0.1:9/v1", { sdk: { enabled: false }, interfaces: { terminal: {} } });
+    input.runtimeContext.telemetry = { relay_enabled: true };
+    await assert.rejects(sessionFactory().create(input), (error) => error.code === "pi_relay_requires_sdk");
+    assert.equal(await exists(join(workspace, "artifacts", ".fabric", "pi", "runtimes", "rt-terminal")), false);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
   }
 });

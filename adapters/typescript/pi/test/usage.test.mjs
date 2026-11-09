@@ -121,7 +121,7 @@ test("retains observed invocation usage on failed and cancelled results", async 
         };
       },
     });
-    await runtime.start({});
+    await runtime.start({ config: {} });
     const result = await runtime.invoke({ input: "test" }, {});
     assert.notEqual(result.status, "succeeded");
     assert.deepEqual(result.usage, observed);
