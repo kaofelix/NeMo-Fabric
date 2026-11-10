@@ -11,14 +11,15 @@ import test from "node:test";
 
 import { PiSdkSessionFactory } from "../dist/pi-sdk.js";
 import { sdkEnabled } from "../dist/settings.js";
-import { launcherScript, PiTerminalSessionFactory, terminalArguments, terminalEnabled } from "../dist/terminal.js";
+import { PiNativeOnlySessionFactory } from "../dist/native-only.js";
+import { launcherScript, terminalArguments, terminalEnabled, withTerminalInterface } from "../dist/terminal.js";
 
 const [major, minor] = process.versions.node.split(".").map(Number);
 const skip = major > 22 || (major === 22 && minor >= 19) ? false : "Pi requires Node >=22.19";
 
 /** The factory the adapter's CLI composes: the terminal interface around the SDK session. */
 function sessionFactory() {
-  return new PiTerminalSessionFactory(new PiSdkSessionFactory());
+  return withTerminalInterface(new PiSdkSessionFactory());
 }
 
 /** A session handle that records whether it was stopped. */
@@ -193,7 +194,7 @@ test("the launcher quotes its paths and refuses to run without the tui.json desc
 
 test("the terminal factory passes a session through unchanged without interfaces.terminal", async () => {
   const handle = fakeHandle(undefined);
-  const factory = new PiTerminalSessionFactory({ create: async () => handle });
+  const factory = withTerminalInterface({ create: async () => handle });
   assert.equal(await factory.create(startInput("/nonexistent", "http://127.0.0.1:9/v1")), handle);
   await assert.rejects(
     factory.create(startInput("/nonexistent", "http://127.0.0.1:9/v1", { interfaces: { terminal: "on" } })),
@@ -203,7 +204,7 @@ test("the terminal factory passes a session through unchanged without interfaces
 
 test("the terminal factory stops the session when it can't write the terminal interface", async () => {
   const handle = fakeHandle(undefined);
-  const factory = new PiTerminalSessionFactory({ create: async () => handle });
+  const factory = withTerminalInterface({ create: async () => handle });
   await assert.rejects(
     factory.create(startInput("/nonexistent", "http://127.0.0.1:9/v1", { interfaces: { terminal: {} } })),
     (error) => error.code === "pi_terminal_unavailable",
@@ -419,7 +420,7 @@ test("a native-only runtime with Relay runs the gateway, and the launcher loads 
   try {
     const input = startInput(workspace, "http://127.0.0.1:9/v1", { sdk: { enabled: false }, interfaces: { terminal: {} } });
     input.runtimeContext.telemetry = { relay_enabled: true };
-    session = await new PiTerminalSessionFactory(new PiSdkSessionFactory(relayFactory)).create(input);
+    session = await withTerminalInterface(new PiSdkSessionFactory(relayFactory), new PiNativeOnlySessionFactory(relayFactory)).create(input);
     assert.equal(started.length, 1);
     // The runtime stops the session's Relay gateway after the session.
     assert.equal(session.relay, started[0]);

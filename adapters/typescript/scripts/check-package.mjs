@@ -72,6 +72,8 @@ const expectedByPackage = {
     "dist/cli.js",
     "dist/native-configuration.d.ts",
     "dist/native-configuration.js",
+    "dist/native-only.d.ts",
+    "dist/native-only.js",
     "dist/node-version.d.ts",
     "dist/node-version.js",
     "dist/pi-sdk.d.ts",
