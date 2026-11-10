@@ -11,11 +11,11 @@ import { createServer } from "node:http";
 import {
   buildCatalogModel,
   modelAwareCompactionReserveTokens,
-  PiSdkSessionFactory,
   resolveCustomTools,
   selectPiMcpServers,
   withCustomBaseUrl,
-} from "../dist/pi-sdk.js";
+} from "../dist/native-configuration.js";
+import { PiSdkSessionFactory } from "../dist/pi-sdk.js";
 import { PiAdapterRuntime } from "../dist/runtime.js";
 
 const [major, minor] = process.versions.node.split(".").map(Number);

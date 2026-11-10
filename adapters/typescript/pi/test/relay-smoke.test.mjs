@@ -12,7 +12,7 @@ import { promisify } from "node:util";
 
 import { PiSdkSessionFactory } from "../dist/pi-sdk.js";
 import { PiAdapterRuntime } from "../dist/runtime.js";
-import { PiTerminalSessionFactory } from "../dist/terminal.js";
+import { withTerminalInterface } from "../dist/terminal.js";
 
 const execFileAsync = promisify(execFile);
 const relayCommand = process.env.FABRIC_TEST_NEMO_RELAY_COMMAND;
@@ -324,7 +324,7 @@ for (const sdk of [true, false]) {
           runtime_id: "relay-terminal",
           telemetry: { relay_enabled: true },
         };
-        runtime = new PiAdapterRuntime(new PiTerminalSessionFactory(new PiSdkSessionFactory()));
+        runtime = new PiAdapterRuntime(withTerminalInterface(new PiSdkSessionFactory()));
         await runtime.start({
           agentName: "pi-relay-terminal",
           baseDir: root,

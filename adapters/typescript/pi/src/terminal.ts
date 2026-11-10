@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// Pi's terminal UI as a native interface of a Fabric runtime. The embedded SDK
-// session already runs on Pi's own files in the runtime's agent directory
-// (agent-directory.ts), so the terminal UI is the stock `pi` pointed at them:
-// PI_CODING_AGENT_DIR plus the flags for what files can't carry. With
-// harness.settings.interfaces.terminal, PiTerminalSessionFactory wraps the SDK
-// session's factory and writes that launcher once the session is ready.
+// Pi's terminal UI as a native interface of a Fabric runtime. Every runtime
+// writes Pi's own files to its agent directory (agent-directory.ts), so the
+// terminal UI is the stock `pi` CLI pointed at them: PI_CODING_AGENT_DIR plus
+// the flags for what files can't carry. With harness.settings.interfaces.terminal,
+// withTerminalInterface writes that launcher once the runtime is ready, whether
+// or not it runs the embedded SDK session.
 // A person starts the terminal UI with `openshell sandbox exec --tty`, outside
 // the adapter's process tree, so the adapter can't own it as a child; a
 // generated extension registers each one and closes it when the runtime stops.
@@ -22,8 +22,9 @@ import { LifecycleError, type AdapterStartInput } from "nemo-fabric-adapters-com
 
 import { runtimeDirectory } from "./agent-directory.js";
 import type { PiNativeConfiguration, PiNativeCustomTool } from "./native-configuration.js";
+import { PiNativeOnlySessionFactory } from "./native-only.js";
 import type { PiPromptOutcome, PiSessionFactory, PiSessionHandle } from "./runtime.js";
-import { terminalEnabled } from "./settings.js";
+import { sdkEnabled, terminalEnabled } from "./settings.js";
 
 export { terminalEnabled };
 
@@ -431,25 +432,35 @@ export class PiTerminalSessionHandle implements PiSessionHandle {
 }
 
 /**
- * Adds the terminal interface around the embedded session's factory, as the
- * runtime composes other native processes beside the SDK session (Hermes's
- * InterfaceChildren, Pi's Relay gateway): the SDK factory resolves and starts
- * the session, and this factory writes the terminal's files from what that
- * session resolved, then withdraws them before the session stops.
+ * Add Pi's terminal interface to a runtime, as the runtime composes other native
+ * processes beside the SDK session (Hermes's InterfaceChildren, Pi's Relay
+ * gateway). Without interfaces.terminal, the SDK factory starts the runtime.
+ * With it, the SDK factory starts the runtime, or the native-only factory does
+ * when sdk.enabled is false; this then writes the launcher and descriptor from
+ * the runtime's configuration, and withdraws them before the runtime stops.
  */
-export class PiTerminalSessionFactory implements PiSessionFactory {
-  private readonly inner: PiSessionFactory;
+export function withTerminalInterface(
+  sdk: PiSessionFactory,
+  nativeOnly: PiSessionFactory = new PiNativeOnlySessionFactory(),
+): PiSessionFactory {
+  return new PiTerminalInterface(sdk, nativeOnly);
+}
 
-  constructor(inner: PiSessionFactory) {
-    this.inner = inner;
+class PiTerminalInterface implements PiSessionFactory {
+  private readonly sdk: PiSessionFactory;
+  private readonly nativeOnly: PiSessionFactory;
+
+  constructor(sdk: PiSessionFactory, nativeOnly: PiSessionFactory) {
+    this.sdk = sdk;
+    this.nativeOnly = nativeOnly;
   }
 
   async create(input: AdapterStartInput): Promise<PiSessionHandle> {
     // Malformed settings fail here, before the session starts.
     if (!terminalEnabled(input.config)) {
-      return this.inner.create(input);
+      return this.sdk.create(input);
     }
-    const handle = await this.inner.create(input);
+    const handle = await (sdkEnabled(input.config) ? this.sdk : this.nativeOnly).create(input);
     let terminal: PiTerminal | undefined;
     try {
       if (handle.configuration === undefined) {
